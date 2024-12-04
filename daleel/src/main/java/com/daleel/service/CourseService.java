@@ -1,9 +1,7 @@
 package com.daleel.service;
 
 import com.daleel.model.Course;
-import com.daleel.model.ProfessorReview;
 import com.daleel.repository.CourseRepository;
-import com.daleel.repository.ReviewRepository;
 import com.daleel.exception.CourseNotFoundException;
 import com.daleel.exception.InvalidInputException;
 import lombok.RequiredArgsConstructor;

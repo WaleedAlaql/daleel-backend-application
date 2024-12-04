@@ -6,7 +6,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 /**
  * Main Application Class for Daleel
  * Daleel (دليل) - meaning "Guide" in Arabic
- * An academic platform for University of Hail
+ * An academic platform for University of Hail Students
  */
 @SpringBootApplication
 public class DaleelApplication {
