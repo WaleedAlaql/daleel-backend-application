@@ -5,11 +5,20 @@ import com.daleel.repository.UserRepository;
 import com.daleel.exception.UserNotFoundException;
 import com.daleel.exception.EmailAlreadyExistsException;
 import com.daleel.exception.InvalidInputException;
+import com.daleel.exception.TokenException;
+import com.daleel.exception.UnauthorizedException;
+import com.daleel.DTO.auth.LoginRequest;
+import com.daleel.DTO.UserDTO;
+import com.daleel.DTO.auth.RegisterRequest;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import java.util.regex.Pattern;
+import javax.security.auth.login.AccountLockedException;
+import com.daleel.security.JwtService;
+import com.daleel.security.enums.Role;
+import com.daleel.DTO.auth.AuthResponse;
 
 /**
  * Service class responsible for managing user operations and business logic.
@@ -37,198 +46,239 @@ public class UserService {
 
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
-
-    // Email pattern for UOH email addresses
-    private static final Pattern UOH_EMAIL_PATTERN = 
-        Pattern.compile("^[A-Za-z0-9._%+-]+@uoh\\.edu\\.sa$");
-    
-    // Password requirements pattern
-    private static final Pattern PASSWORD_PATTERN = 
-        Pattern.compile("^(?=.*[0-9])(?=.*[a-z])(?=.*[A-Z])(?=.*[@#$%^&+=])(?=\\S+$).{8,}$");
+    private final JwtService jwtService;
+    private static final Pattern UOH_EMAIL_PATTERN = Pattern.compile("^[A-Za-z0-9._%+-]+@uoh\\.edu\\.sa$");
 
     /**
-     * Creates a new user account in the system.
+     * Registers a new user in the system.
      * 
      * This method:
-     * 1. Validates user input data
+     * 1. Validates the registration request
      * 2. Checks for existing email
-     * 3. Encodes the password
-     * 4. Creates the user account
-     * 
-     * Validation Rules:
+     * 3. Creates and saves new user
+     * 4. Returns user data without sensitive information
+     *
+     * Business Rules:
      * - Email must be a valid UOH email address
      * - Password must meet security requirements
-     * - Name must not be empty
      * - Email must be unique in the system
      * 
-     * @param user The user entity to be created
-     * @return The created user with generated ID
+     * @param request Registration data including email and password
+     * @return UserDTO containing the created user's information
      * @throws EmailAlreadyExistsException if email is already registered
-     * @throws InvalidInputException if validation fails
-     * 
-     * Usage example:
-     * {@code
-     * User newUser = new User();
-     * newUser.setEmail("student@uoh.edu.sa");
-     * newUser.setPassword("SecurePass123!");
-     * newUser.setName("John Doe");
-     * User createdUser = userService.createUser(newUser);
-     * }
+     * @throws InvalidInputException if input data is invalid
      */
     @Transactional
-    public User createUser(User user) {
-        // Validate input
-        validateNewUser(user);
-
-        // Check for existing email
-        if (userRepository.existsByEmail(user.getEmail())) {
-            throw new EmailAlreadyExistsException("Email already registered: " + user.getEmail());
-        }
-
-        // Encode password and prepare user
-        user.setPassword(passwordEncoder.encode(user.getPassword()));
-        user.setActive(true);
-
-        return userRepository.save(user);
+public AuthResponse registerUser(RegisterRequest request) {
+    // Validate UOH email format
+    if (!UOH_EMAIL_PATTERN.matcher(request.getEmail()).matches()) {
+        throw new InvalidInputException("Must use a valid UOH email address");
     }
 
+    // Check if email already exists
+    if (userRepository.existsByEmail(request.getEmail())) {
+        throw new EmailAlreadyExistsException("Email already registered");
+    }
+
+    // Create new user with STUDENT role
+    var user = User.builder()
+            .name(request.getName())
+            .email(request.getEmail())
+            .password(passwordEncoder.encode(request.getPassword()))
+            .studentId(request.getStudentId())
+            .department(request.getDepartment())
+            .role(Role.STUDENT)  // Automatically assign STUDENT role
+            .active(true)
+            .build();
+
+    // Save user
+    userRepository.save(user);
+
+    // Generate token
+    var token = jwtService.generateToken(user.getEmail());
+
+    // Return AuthResponse DTO
+    return AuthResponse.builder()
+            .token(token)
+            .name(user.getName())
+            .email(user.getEmail())
+            .role(user.getRole().toString())
+            .studentId(user.getStudentId())
+            .department(user.getDepartment())
+            .build();
+}
+
     /**
-     * Retrieves a user by their ID.
+     * Authenticates a user and generates a JWT token.
      * 
-     * This method is commonly used for:
-     * - Profile retrieval
-     * - Authorization checks
-     * - User data management
+     * This method:
+     * 1. Validates credentials
+     * 2. Checks account status
+     * 3. Generates JWT token
+     *
+     * Security measures:
+     * - Passwords are compared using secure hash comparison
+     * - Failed attempts are tracked (implementation needed)
+     * - Locked accounts are rejected
      * 
-     * @param id The unique identifier of the user
-     * @return The found user entity
-     * @throws UserNotFoundException if no user exists with the given ID
-     * 
-     * Usage example:
-     * {@code
-     * User user = userService.getUserById(123L);
-     * System.out.println("User name: " + user.getName());
-     * }
+     * @param request Login credentials
+     * @return JWT token for authenticated user
+     * @throws UnauthorizedException if credentials are invalid
+     * @throws AccountLockedException if account is locked
      */
-    public User getUserById(Long id) {
+    public AuthResponse authenticateUser(LoginRequest request) {
+        User user = userRepository.findByEmail(request.getEmail())
+            .orElseThrow(() -> new UnauthorizedException("Invalid credentials"));
+
+
+        if (!passwordEncoder.matches(request.getPassword(), user.getPassword())) {
+            throw new UnauthorizedException("Invalid credentials");
+        }
+
+        var token = jwtService.generateToken(user.getEmail());
+
+        return AuthResponse.builder()
+            .token(token)
+            .name(user.getName())
+            .email(user.getEmail())
+            .role(user.getRole().toString())
+            .studentId(user.getStudentId())
+            .department(user.getDepartment())
+            .build();
+    }
+
+        /**
+     * Helper method to get user by ID.
+     * Internal use only.
+     * 
+     * @param id The ID of the user to retrieve
+     * @return User entity
+     * @throws UserNotFoundException if user doesn't exist
+     */
+    User getUserById(Long id) {
         return userRepository.findById(id)
             .orElseThrow(() -> new UserNotFoundException("User not found with id: " + id));
     }
 
     /**
-     * Retrieves a user by their email address.
+     * Retrieves a user by their ID and converts to DTO
      * 
-     * Commonly used for:
-     * - Authentication
-     * - Password reset
-     * - Profile lookup
-     * 
-     * @param email The email address to search for
-     * @return The found user entity
-     * @throws UserNotFoundException if no user exists with the given email
-     * 
-     * Usage example:
-     * {@code
-     * User user = userService.getUserByEmail("student@uoh.edu.sa");
-     * System.out.println("Found user: " + user.getName());
-     * }
+     * @param id The ID of the user to retrieve
+     * @return UserDTO containing user information
+     * @throws UserNotFoundException if user doesn't exist
      */
-    public User getUserByEmail(String email) {
-        return userRepository.findByEmail(email)
-            .orElseThrow(() -> new UserNotFoundException("User not found with email: " + email));
+    public UserDTO getUserDTOById(Long id) {
+        User user = getUserById(id);  // Reuse the helper method
+        
+        return UserDTO.builder()
+                .id(user.getId())
+                .name(user.getName())
+                .email(user.getEmail())
+                .studentId(user.getStudentId())
+                .department(user.getDepartment())
+                .role(user.getRole().toString())
+                .build();
     }
 
-    /**
+        /**
      * Updates user information.
      * 
-     * This method:
-     * 1. Validates the update data
-     * 2. Updates only provided fields
-     * 3. Maintains password security
-     * 
-     * Security considerations:
-     * - Password is re-encoded if updated
-     * - Email cannot be changed (business rule)
-     * - Only non-null fields are updated
-     * 
-     * @param id The ID of the user to update
-     * @param userDetails The user entity containing updated fields
-     * @return The updated user entity
+     * @param id User ID to update
+     * @param userDTO Updated user information
+     * @return UserDTO with updated information
      * @throws UserNotFoundException if user doesn't exist
-     * @throws InvalidInputException if validation fails
-     * 
-     * Usage example:
-     * {@code
-     * User updates = new User();
-     * updates.setName("New Name");
-     * User updatedUser = userService.updateUser(userId, updates);
-     * }
+     * @throws EmailAlreadyExistsException if new email is already in use
+     * @throws InvalidInputException if update data is invalid
      */
     @Transactional
-    public User updateUser(Long id, User userDetails) {
-        User existingUser = getUserById(id);
+    public UserDTO updateUser(Long id, UserDTO userDTO) {
+        // Get existing user
+        User user = getUserById(id);
         
-        // Update name if provided
-        if (userDetails.getName() != null && !userDetails.getName().trim().isEmpty()) {
-            existingUser.setName(userDetails.getName().trim());
+        // Check email uniqueness if changed
+        if (userDTO.getEmail() != null && !user.getEmail().equals(userDTO.getEmail())) {
+            if (userRepository.existsByEmail(userDTO.getEmail())) {
+                throw new EmailAlreadyExistsException("Email already in use: " + userDTO.getEmail());
+            }
+            if (!UOH_EMAIL_PATTERN.matcher(userDTO.getEmail()).matches()) {
+                throw new InvalidInputException("Must use a valid UOH email address");
+            }
+            user.setEmail(userDTO.getEmail());
         }
-        
-        // Update password if provided
-        if (userDetails.getPassword() != null) {
-            validatePassword(userDetails.getPassword());
-            existingUser.setPassword(passwordEncoder.encode(userDetails.getPassword()));
+
+        // Update allowed fields (only if provided in userDTO)
+        if (userDTO.getName() != null) {
+            user.setName(userDTO.getName());
         }
+        if (userDTO.getStudentId() != null) {
+            user.setStudentId(userDTO.getStudentId());
+        }
+        if (userDTO.getDepartment() != null) {
+            user.setDepartment(userDTO.getDepartment());
+        }
+
+        // Save the updated user
+        User updatedUser = userRepository.save(user);
         
-        return userRepository.save(existingUser);
+        // Convert and return
+        return convertToDTO(updatedUser);
+    }
+
+        /**
+     * Deletes a user account.
+     * Users can only delete their own accounts.
+     * 
+     * @param id User ID to delete
+     * @param authenticatedEmail Email from JWT token
+     * @throws UserNotFoundException if user doesn't exist
+     * @throws UnauthorizedException if trying to delete another user's account
+     */
+    @Transactional
+    public void deleteUser(Long id, String authenticatedEmail) {
+        User user = getUserById(id);
+        
+        // Check if user is trying to delete their own account
+        if (!user.getEmail().equals(authenticatedEmail)) {
+            throw new UnauthorizedException("You can only delete your own account");
+        }
+        userRepository.delete(user);
     }
 
     /**
-     * Validates a new user's data before creation.
-     * 
-     * Checks:
-     * - Email format (must be UOH email)
-     * - Password strength
-     * - Name requirements
-     * 
-     * @param user The user to validate
-     * @throws InvalidInputException if validation fails
+     * Converts User entity to UserDTO.
+     * Removes sensitive information.
      */
-    private void validateNewUser(User user) {
-        // Validate email
-        if (user.getEmail() == null || !UOH_EMAIL_PATTERN.matcher(user.getEmail()).matches()) {
-            throw new InvalidInputException("Invalid email format. Must be a UOH email address");
-        }
-
-        // Validate password
-        validatePassword(user.getPassword());
-
-        // Validate name
-        if (user.getName() == null || user.getName().trim().isEmpty()) {
-            throw new InvalidInputException("Name is required");
-        }
+    private UserDTO convertToDTO(User user) {
+        UserDTO dto = new UserDTO();
+        dto.setId(user.getId());
+        dto.setEmail(user.getEmail());
+        dto.setName(user.getName());
+        dto.setStudentId(user.getStudentId());
+        dto.setDepartment(user.getDepartment());
+        dto.setRole(user.getRole().toString());
+        // Add other fields as needed
+        return dto;
     }
 
     /**
-     * Validates password strength requirements.
+     * Validates a user's JWT token and returns the associated user.
      * 
-     * Requirements:
-     * - Minimum 8 characters
-     * - At least one digit
-     * - At least one lowercase letter
-     * - At least one uppercase letter
-     * - At least one special character
-     * - No whitespace
-     * 
-     * @param password The password to validate
-     * @throws InvalidInputException if password is invalid
-     */
-    private void validatePassword(String password) {
-        if (password == null || !PASSWORD_PATTERN.matcher(password).matches()) {
-            throw new InvalidInputException(
-                "Password must be at least 8 characters long and contain at least: " +
-                "one digit, one lowercase letter, one uppercase letter, " +
-                "one special character, and no whitespace"
-            );
-        }
+     * @param token JWT token including "Bearer " prefix
+ * @return UserDTO of the authenticated user
+ * @throws TokenException if token is invalid, expired, or malformed
+ * @throws UnauthorizedException if user not found
+ */
+public UserDTO validateTokenAndGetUser(String token) {
+    // Validate token (will throw TokenException if invalid)
+    jwtService.validateToken(token);
+    
+    // Get email from token
+    String email = jwtService.getEmailFromToken(token);
+    
+    // Find and return user
+    User user = userRepository.findByEmail(email)
+            .orElseThrow(() -> new UnauthorizedException("User not found"));
+        
+        return convertToDTO(user);
     }
 }

@@ -164,6 +164,53 @@ public class MaterialService {
         materialRepository.incrementDownloads(id);
     }
 
+          /**
+     * Updates an existing educational material.
+     * 
+     * This method:
+     * 1. Verifies material exists
+     * 2. Validates updated data
+     * 3. Preserves original metadata
+     * 
+     * Validation Rules:
+     * - File must be of allowed type
+     * - File size must be within limits
+     * - Course code must be valid
+     * - Title and description required
+     * 
+     * @param id The ID of the material to update
+     * @param material The updated material data
+     * @return The updated material
+     * @throws MaterialNotFoundException if material doesn't exist
+     * @throws InvalidInputException if validation fails
+     * 
+     * Usage example:
+     * {@code
+     * Material updatedData = new Material();
+     * updatedData.setTitle("Updated Calculus Notes");
+     * updatedData.setCourseCode("MATH101");
+     * Material updated = materialService.updateMaterial(123L, updatedData);
+     * }
+     */
+    @Transactional
+    public Material updateMaterial(Long id, Material material) {
+        // Get existing material
+        Material existingMaterial = getMaterialById(id);
+        
+        // Validate updated data
+        validateMaterial(material);
+        
+        // Preserve original metadata
+        material.setId(id);
+        material.setUser(existingMaterial.getUser());
+        material.setUploadDate(existingMaterial.getUploadDate());
+        material.setDownloads(existingMaterial.getDownloads());
+        
+        // Save updates
+        return materialRepository.save(material);
+    }
+
+
    /**
      * Deletes a material from the system.
      * 

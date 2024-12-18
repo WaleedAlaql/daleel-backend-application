@@ -5,8 +5,10 @@ import jakarta.validation.constraints.*;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import lombok.AllArgsConstructor;
+import lombok.Builder;
 import java.time.LocalDateTime;
 import java.util.List;
+import com.daleel.security.enums.Role;
 
 /**
  * User Entity - Represents a student in the system
@@ -18,6 +20,7 @@ import java.util.List;
 @Table(name = "users")       // JPA: Specifies the table name in the database
 @NoArgsConstructor           // Lombok: Generates a no-args constructor
 @AllArgsConstructor          // Lombok: Generates an all-args constructor
+@Builder                     // Lombok: Generates a builder for the class   
 public class User {
     
     // Primary key configuration
@@ -45,12 +48,30 @@ public class User {
     @Column(nullable = false)
     private String name;
 
+    // User's student ID
+    @NotBlank(message = "Student ID is required")
+    @Column(nullable = false)
+    private String studentId;
+
+    // User's department
+    @NotBlank(message = "Department is required")
+    @Column(nullable = false)
+    private String department;
+
+    // User's role
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    private Role role;
+
+
+
     // Account creation timestamp
     @Column(nullable = false)
     private LocalDateTime createdAt;
 
     // Account status
     @Column(nullable = false)
+    @Builder.Default
     private boolean active = true;
 
     // Relationships
