@@ -6,8 +6,8 @@ import com.daleel.DTO.auth.LoginRequest;
 import com.daleel.DTO.auth.RegisterRequest;
 import com.daleel.exception.TokenException;
 import com.daleel.exception.UserNotFoundException;
-import com.daleel.security.JwtService;
 import com.daleel.service.UserService;
+import com.daleel.service.auth.AuthenticationService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
@@ -16,6 +16,7 @@ import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -35,7 +36,7 @@ import org.springframework.web.server.ResponseStatusException;
 public class UserController {
 
     private final UserService userService;
-    private final JwtService jwtService;
+    private final AuthenticationService authenticationService;
     /**
      * Register a new user with UOH credentials.
      * 
@@ -50,7 +51,7 @@ public class UserController {
         @ApiResponse(responseCode = "409", description = "Email already registered")
     })
     public ResponseEntity<AuthResponse> register(@Valid @RequestBody RegisterRequest request) {
-        AuthResponse response = userService.registerUser(request);
+        AuthResponse response = authenticationService.registerUser(request);
         return new ResponseEntity<>(response, HttpStatus.CREATED);
     }
 
@@ -68,7 +69,7 @@ public class UserController {
         @ApiResponse(responseCode = "423", description = "Account locked")
     })
     public ResponseEntity<AuthResponse> login(@Valid @RequestBody LoginRequest request) {
-        AuthResponse response = userService.authenticateUser(request);
+        AuthResponse response = authenticationService.authenticateUser(request);
         return ResponseEntity.ok(response);
     }
  
@@ -127,20 +128,15 @@ public class UserController {
      * @return No content on success
      */
     @DeleteMapping("/{id}")
-    @Operation(summary = "Delete user account", description = "Delete user account (can only delete own account)")
+    @PreAuthorize("hasRole('ADMIN') or @userService.isCurrentUser(#id)")
+    @Operation(summary = "Delete a user", description = "Delete a user by their ID. Requires authentication.")
     @ApiResponses(value = {
-        @ApiResponse(responseCode = "204", description = "Account deleted successfully"),
-        @ApiResponse(responseCode = "403", description = "Cannot delete another user's account"),
-        @ApiResponse(responseCode = "404", description = "User not found")
+        @ApiResponse(responseCode = "204", description = "User successfully deleted"),
+        @ApiResponse(responseCode = "404", description = "User not found"),
+        @ApiResponse(responseCode = "403", description = "Unauthorized to delete this user")
     })
-    public ResponseEntity<Void> deleteUser(
-            @PathVariable Long id,
-            @RequestHeader("Authorization") String token) {
-        
-        // Get email from token
-        String email = jwtService.getEmailFromToken(token.substring(7).trim());
-        
-        userService.deleteUser(id, email);
+    public ResponseEntity<Void> deleteUser(@PathVariable Long id) {
+        userService.deleteUser(id);
         return ResponseEntity.noContent().build();
     }
 
@@ -158,7 +154,7 @@ public class UserController {
         try {
             // Remove "Bearer " prefix and trim
             String jwtToken = token.substring(7).trim();
-            return ResponseEntity.ok(userService.validateTokenAndGetUser(jwtToken));
+            return ResponseEntity.ok(authenticationService.validateTokenAndGetUser(jwtToken));
         } catch (Exception e) {
             throw new TokenException("Invalid token format");
         }

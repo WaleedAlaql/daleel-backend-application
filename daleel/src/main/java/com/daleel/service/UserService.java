@@ -1,24 +1,25 @@
 package com.daleel.service;
 
 import com.daleel.model.User;
+import com.daleel.repository.MaterialRepository;
 import com.daleel.repository.UserRepository;
 import com.daleel.exception.UserNotFoundException;
 import com.daleel.exception.EmailAlreadyExistsException;
 import com.daleel.exception.InvalidInputException;
-import com.daleel.exception.TokenException;
 import com.daleel.exception.UnauthorizedException;
-import com.daleel.DTO.auth.LoginRequest;
 import com.daleel.DTO.UserDTO;
-import com.daleel.DTO.auth.RegisterRequest;
 import lombok.RequiredArgsConstructor;
-import org.springframework.security.crypto.password.PasswordEncoder;
+
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.core.userdetails.UserDetails;
+import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.core.userdetails.UsernameNotFoundException;
+
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import java.util.regex.Pattern;
-import javax.security.auth.login.AccountLockedException;
-import com.daleel.security.JwtService;
-import com.daleel.security.enums.Role;
-import com.daleel.DTO.auth.AuthResponse;
 
 /**
  * Service class responsible for managing user operations and business logic.
@@ -42,110 +43,12 @@ import com.daleel.DTO.auth.AuthResponse;
  */
 @Service
 @RequiredArgsConstructor
-public class UserService {
+public class UserService implements UserDetailsService {
 
     private final UserRepository userRepository;
-    private final PasswordEncoder passwordEncoder;
-    private final JwtService jwtService;
+    private final MaterialRepository materialRepository;
     private static final Pattern UOH_EMAIL_PATTERN = Pattern.compile("^[A-Za-z0-9._%+-]+@uoh\\.edu\\.sa$");
 
-    /**
-     * Registers a new user in the system.
-     * 
-     * This method:
-     * 1. Validates the registration request
-     * 2. Checks for existing email
-     * 3. Creates and saves new user
-     * 4. Returns user data without sensitive information
-     *
-     * Business Rules:
-     * - Email must be a valid UOH email address
-     * - Password must meet security requirements
-     * - Email must be unique in the system
-     * 
-     * @param request Registration data including email and password
-     * @return UserDTO containing the created user's information
-     * @throws EmailAlreadyExistsException if email is already registered
-     * @throws InvalidInputException if input data is invalid
-     */
-    @Transactional
-public AuthResponse registerUser(RegisterRequest request) {
-    // Validate UOH email format
-    if (!UOH_EMAIL_PATTERN.matcher(request.getEmail()).matches()) {
-        throw new InvalidInputException("Must use a valid UOH email address");
-    }
-
-    // Check if email already exists
-    if (userRepository.existsByEmail(request.getEmail())) {
-        throw new EmailAlreadyExistsException("Email already registered");
-    }
-
-    // Create new user with STUDENT role
-    var user = User.builder()
-            .name(request.getName())
-            .email(request.getEmail())
-            .password(passwordEncoder.encode(request.getPassword()))
-            .studentId(request.getStudentId())
-            .department(request.getDepartment())
-            .role(Role.STUDENT)  // Automatically assign STUDENT role
-            .active(true)
-            .build();
-
-    // Save user
-    userRepository.save(user);
-
-    // Generate token
-    var token = jwtService.generateToken(user.getEmail());
-
-    // Return AuthResponse DTO
-    return AuthResponse.builder()
-            .token(token)
-            .name(user.getName())
-            .email(user.getEmail())
-            .role(user.getRole().toString())
-            .studentId(user.getStudentId())
-            .department(user.getDepartment())
-            .build();
-}
-
-    /**
-     * Authenticates a user and generates a JWT token.
-     * 
-     * This method:
-     * 1. Validates credentials
-     * 2. Checks account status
-     * 3. Generates JWT token
-     *
-     * Security measures:
-     * - Passwords are compared using secure hash comparison
-     * - Failed attempts are tracked (implementation needed)
-     * - Locked accounts are rejected
-     * 
-     * @param request Login credentials
-     * @return JWT token for authenticated user
-     * @throws UnauthorizedException if credentials are invalid
-     * @throws AccountLockedException if account is locked
-     */
-    public AuthResponse authenticateUser(LoginRequest request) {
-        User user = userRepository.findByEmail(request.getEmail())
-            .orElseThrow(() -> new UnauthorizedException("Invalid credentials"));
-
-
-        if (!passwordEncoder.matches(request.getPassword(), user.getPassword())) {
-            throw new UnauthorizedException("Invalid credentials");
-        }
-
-        var token = jwtService.generateToken(user.getEmail());
-
-        return AuthResponse.builder()
-            .token(token)
-            .name(user.getName())
-            .email(user.getEmail())
-            .role(user.getRole().toString())
-            .studentId(user.getStudentId())
-            .department(user.getDepartment())
-            .build();
-    }
 
         /**
      * Helper method to get user by ID.
@@ -179,6 +82,19 @@ public AuthResponse registerUser(RegisterRequest request) {
                 .role(user.getRole().toString())
                 .build();
     }
+
+    /**
+ * Get user by email.
+ * Internal use only - used by security filters.
+ * 
+ * @param email The email to search for
+ * @return User entity
+ * @throws UserNotFoundException if user doesn't exist
+ */
+public User getUserByEmail(String email) {
+    return userRepository.findByEmail(email)
+            .orElseThrow(() -> new UserNotFoundException("User not found with email: " + email));
+    }   
 
         /**
      * Updates user information.
@@ -234,14 +150,49 @@ public AuthResponse registerUser(RegisterRequest request) {
      * @throws UnauthorizedException if trying to delete another user's account
      */
     @Transactional
-    public void deleteUser(Long id, String authenticatedEmail) {
-        User user = getUserById(id);
-        
-        // Check if user is trying to delete their own account
-        if (!user.getEmail().equals(authenticatedEmail)) {
-            throw new UnauthorizedException("You can only delete your own account");
+    public void deleteUser(Long id) {
+        User user = userRepository.findById(id)
+            .orElseThrow(() -> new UserNotFoundException("User not found with id: " + id));
+            
+        if (!isCurrentUser(id)) {
+            throw new AccessDeniedException("Not authorized to delete this user");
         }
+        
+        // Delete associated materials first
+        materialRepository.deleteByUserId(id);
+        
+        // Then delete the user
         userRepository.delete(user);
+    }
+
+public boolean isCurrentUser(Long userId) {
+    Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+    if (auth == null || !auth.isAuthenticated()) {
+        return false;
+    }
+    
+    // If user is admin, allow access
+    if (auth.getAuthorities().stream()
+            .anyMatch(a -> a.getAuthority().equals("ROLE_ADMIN"))) {
+        return true;
+    }
+    
+    // Check if current user matches requested user ID
+    return userRepository.findById(userId)
+        .map(user -> user.getEmail().equals(auth.getName()))
+        .orElse(false);
+}
+
+     @Override
+    public UserDetails loadUserByUsername(String email) throws UsernameNotFoundException {
+        User user = userRepository.findByEmail(email)
+            .orElseThrow(() -> new UsernameNotFoundException("User not found with email: " + email));
+        
+        return org.springframework.security.core.userdetails.User.builder()
+            .username(user.getEmail())
+            .password(user.getPassword())
+            .roles(user.getRole().name())
+            .build();
     }
 
     /**
@@ -258,27 +209,5 @@ public AuthResponse registerUser(RegisterRequest request) {
         dto.setRole(user.getRole().toString());
         // Add other fields as needed
         return dto;
-    }
-
-    /**
-     * Validates a user's JWT token and returns the associated user.
-     * 
-     * @param token JWT token including "Bearer " prefix
- * @return UserDTO of the authenticated user
- * @throws TokenException if token is invalid, expired, or malformed
- * @throws UnauthorizedException if user not found
- */
-public UserDTO validateTokenAndGetUser(String token) {
-    // Validate token (will throw TokenException if invalid)
-    jwtService.validateToken(token);
-    
-    // Get email from token
-    String email = jwtService.getEmailFromToken(token);
-    
-    // Find and return user
-    User user = userRepository.findByEmail(email)
-            .orElseThrow(() -> new UnauthorizedException("User not found"));
-        
-        return convertToDTO(user);
     }
 }

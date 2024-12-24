@@ -4,6 +4,7 @@ import com.daleel.model.Material;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 import java.util.List;
 
@@ -46,4 +47,22 @@ public interface MaterialRepository extends JpaRepository<Material, Long> {
     @Modifying
     @Query("UPDATE Material m SET m.downloads = m.downloads + 1 WHERE m.id = :id")
     void incrementDownloads(Long id);
+
+    /**
+     * Deletes all materials uploaded by a specific user.
+     * 
+     * @param userId The ID of the user whose materials to delete
+     * Usage example: materialRepository.deleteByUserId(userId)
+     */
+    void deleteByUserId(Long userId);
+
+    /**
+     * Deletes a material by its ID.
+     * 
+     * @param id The ID of the material to delete
+     * Usage example: materialRepository.deleteMaterialById(materialId)
+     */
+    @Modifying
+    @Query("DELETE FROM Material m WHERE m.id = :id")
+    void deleteMaterialById(@Param("id") Long id);
 }

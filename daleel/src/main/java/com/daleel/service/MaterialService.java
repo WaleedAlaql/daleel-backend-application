@@ -3,283 +3,317 @@ package com.daleel.service;
 import com.daleel.model.Material;
 import com.daleel.model.User;
 import com.daleel.repository.MaterialRepository;
+
+import io.jsonwebtoken.io.IOException;
+
 import com.daleel.exception.MaterialNotFoundException;
 import com.daleel.exception.UnauthorizedAccessException;
+import com.daleel.exception.FileStorageException;
 import com.daleel.exception.InvalidInputException;
+import com.daleel.DTO.MaterialDTO;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.io.Resource;
+import org.springframework.core.io.UrlResource;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-
+import org.springframework.web.multipart.MultipartFile;
+import java.net.MalformedURLException;
+import java.nio.file.Path;
 import java.time.LocalDateTime;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Optional;
+import java.util.stream.Collectors;
 
 /**
- * Service class responsible for managing educational materials.
+ * Service responsible for managing educational materials.
  * 
  * This service handles:
- * - Upload and management of educational materials
+ * - Material creation and management
+ * - File validation and storage
  * - Download tracking
- * - Material search and retrieval
- * - Access control and permissions
- *
+ * - Access control
+ * 
  * Business Rules:
  * - Only authenticated users can upload materials
  * - Users can only modify/delete their own materials
- * - Materials must be associated with valid course codes
+ * - Materials must have valid course codes
  * - File size and type restrictions apply
- *
- * @author Waleed Alaql
- * @version 1.0
- * @see Material
- * @see MaterialRepository
  */
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class MaterialService {
 
     private final MaterialRepository materialRepository;
     private final UserService userService;
+    private final FileStorageService fileStorageService;
 
-    // Maximum file size in bytes (50MB)
-    private static final long MAX_FILE_SIZE = 52_428_800L;
+    @Value("${file.max-size:10485760}") // 10MB default
+    private long maxFileSize;
+
+    @Value("${file.allowed-types:pdf,doc,docx}")
+    private String[] allowedTypes;
     
-    // Allowed file types
-    private static final List<String> ALLOWED_FILE_TYPES = List.of(
-        "pdf", "doc", "docx", "ppt", "pptx"
-    );
-
     /**
-     * Creates a new educational material in the system.
+     * Creates a new material with uploaded file.
      * 
-     * This method:
-     * 1. Validates the material data
-     * 2. Associates it with the uploading user
-     * 3. Initializes download counter
-     * 4. Saves the material
-     * 
-     * Validation Rules:
-     * - File must be of allowed type
-     * - File size must be within limits
-     * - Course code must be valid
-     * - Title and description required
-     * 
-     * @param material The material entity to be created
-     * @param userId The ID of the uploading user
-     * @return The created material with generated ID
-     * @throws InvalidInputException if validation fails
-     * @throws UnauthorizedAccessException if user not found
-     * 
-     * Usage example:
-     * {@code
-     * Material newMaterial = new Material();
-     * newMaterial.setTitle("Calculus Notes");
-     * newMaterial.setCourseCode("MATH101");
-     * Material created = materialService.createMaterial(newMaterial, currentUserId);
-     * }
+     * @param materialDTO Material metadata
+     * @param file Uploaded file
+     * @param userId ID of uploading user
+     * @return Created material DTO
      */
     @Transactional
-    public Material createMaterial(Material material, Long userId) {
-        // Get user and validate
+    public MaterialDTO createMaterial(MaterialDTO materialDTO, MultipartFile file, Long userId) {
+        log.info("Creating material for user: {}", userId);
+        
+        validateFile(file);
         User user = userService.getUserById(userId);
         
-        // Validate material
-        validateMaterial(material);
-        
-        // Set initial values
-        material.setUser(user);
-        material.setDownloads(0);
-        material.setUploadDate(LocalDateTime.now());
-        
-        return materialRepository.save(material);
+        try {
+            String storedFilename = fileStorageService.storeFile(file);
+            
+            Material material = Material.builder()
+            .title(materialDTO.getTitle())
+            .description(materialDTO.getDescription())
+            .courseCode(materialDTO.getCourseCode())
+            .courseName(materialDTO.getCourseName())
+            .fileUrl(storedFilename)
+            .fileType(getFileExtension(file.getOriginalFilename()))
+            .fileSize(file.getSize())
+    .user(user)
+    .downloads(0)
+    .uploadDate(LocalDateTime.now())
+    .build();
+
+            Material savedMaterial = materialRepository.save(material);
+            return convertToDTO(savedMaterial);
+
+        } catch (Exception e) {
+            log.error("Error creating material: ", e);
+            throw new RuntimeException("Could not create material", e);
+        }
     }
 
     /**
-     * Retrieves a material by its ID.
+     * Retrieves a material by ID.
      * 
-     * Used for:
-     * - Material display
-     * - Download preparation
-     * - Edit/delete operations
-     * 
-     * @param id The unique identifier of the material
-     * @return The found material entity
-     * @throws MaterialNotFoundException if material doesn't exist
-     * 
-     * Usage example:
-     * {@code
-     * Material material = materialService.getMaterialById(123L);
-     * System.out.println("Title: " + material.getTitle());
-     * }
+     * @param id Material ID
+     * @return Material DTO
+     * @throws MaterialNotFoundException if not found
      */
-    public Material getMaterialById(Long id) {
-        return materialRepository.findById(id)
+    public MaterialDTO getMaterialById(Long id) {
+        Material material = materialRepository.findById(id)
             .orElseThrow(() -> new MaterialNotFoundException("Material not found with id: " + id));
+        return convertToDTO(material);
     }
 
     /**
-     * Retrieves all materials for a specific course.
+     * Lists all materials for a course.
      * 
-     * This method:
-     * - Returns materials sorted by upload date
-     * - Includes download counts
-     * - Filters by exact course code match
-     * 
-     * @param courseCode The course code to search for
-     * @return List of materials for the course
-     * @throws InvalidInputException if course code is invalid
-     * 
-     * Usage example:
-     * {@code
-     * List<Material> materials = materialService.getMaterialsByCourse("MATH101");
-     * materials.forEach(m -> System.out.println(m.getTitle()));
-     * }
+     * @param courseCode Course code to search for
+     * @return List of material DTOs
      */
-    public List<Material> getMaterialsByCourse(String courseCode) {
-        validateCourseCode(courseCode);
-        return materialRepository.findByCourseCode(courseCode);
+    public List<MaterialDTO> getMaterialsByCourse(String courseCode) {
+        return materialRepository.findByCourseCode(courseCode).stream()
+            .map(this::convertToDTO)
+            .collect(Collectors.toList());
     }
 
     /**
-     * Records a download for a material and increments counter.
-     * 
-     * This method:
-     * 1. Verifies material exists
-     * 2. Updates download counter atomically
-     * 3. Handles concurrent downloads safely
-     * 
-     * @param id The ID of the downloaded material
-     * @throws MaterialNotFoundException if material doesn't exist
-     * 
-     * Usage example:
-     * {@code
-     * materialService.downloadMaterial(123L);
-     * System.out.println("Download recorded");
-     * }
+     * Get materials uploaded by a specific user
+     */
+    public List<MaterialDTO> getMaterialsByUserId(Long userId) {
+        return materialRepository.findByUserId(userId).stream()
+            .map(this::convertToDTO)
+            .collect(Collectors.toList());
+    }
+
+    /**
+     * Get all materials without pagination
+     */
+    public List<MaterialDTO> getAllMaterials() {
+        return materialRepository.findAll().stream()
+            .map(this::convertToDTO)
+            .collect(Collectors.toList());
+    }
+
+    /**
+     * Update an existing material
      */
     @Transactional
-    public void downloadMaterial(Long id) {
-        // Verify material exists
-        getMaterialById(id);
-        // Increment downloads atomically
+    public MaterialDTO updateMaterial(Long id, MaterialDTO materialDTO, Long userId) {
+        Material material = materialRepository.findById(id)
+            .orElseThrow(() -> new MaterialNotFoundException("Material not found with id: " + id));
+        
+        // Check if user owns the material
+        if (!material.getUser().getId().equals(userId)) {
+            throw new UnauthorizedAccessException("You can only update your own materials");
+        }
+        
+        material.setTitle(materialDTO.getTitle());
+        material.setDescription(materialDTO.getDescription());
+        material.setCourseCode(materialDTO.getCourseCode());
+        material.setCourseName(materialDTO.getCourseName());
+        
+        Material updatedMaterial = materialRepository.save(material);
+        return convertToDTO(updatedMaterial);
+    }
+
+    /**
+     * Updates material download count.
+     * 
+     * @param id Material ID
+     */
+    @Transactional
+    public void incrementDownloads(Long id) {
         materialRepository.incrementDownloads(id);
     }
 
-          /**
-     * Updates an existing educational material.
+    /**
+     * Deletes a material and its associated file.
      * 
-     * This method:
-     * 1. Verifies material exists
-     * 2. Validates updated data
-     * 3. Preserves original metadata
-     * 
-     * Validation Rules:
-     * - File must be of allowed type
-     * - File size must be within limits
-     * - Course code must be valid
-     * - Title and description required
-     * 
-     * @param id The ID of the material to update
-     * @param material The updated material data
-     * @return The updated material
-     * @throws MaterialNotFoundException if material doesn't exist
-     * @throws InvalidInputException if validation fails
-     * 
-     * Usage example:
-     * {@code
-     * Material updatedData = new Material();
-     * updatedData.setTitle("Updated Calculus Notes");
-     * updatedData.setCourseCode("MATH101");
-     * Material updated = materialService.updateMaterial(123L, updatedData);
-     * }
+     * @param id Material ID
+     * @param userId ID of user attempting deletion
+     * @throws java.io.IOException 
+     * @throws UnauthorizedAccessException if user isn't the owner
      */
     @Transactional
-    public Material updateMaterial(Long id, Material material) {
-        // Get existing material
-        Material existingMaterial = getMaterialById(id);
-        
-        // Validate updated data
-        validateMaterial(material);
-        
-        // Preserve original metadata
-        material.setId(id);
-        material.setUser(existingMaterial.getUser());
-        material.setUploadDate(existingMaterial.getUploadDate());
-        material.setDownloads(existingMaterial.getDownloads());
-        
-        // Save updates
-        return materialRepository.save(material);
+    public void deleteMaterial(Long id, Long userId) {
+    log.info("Attempting to delete material with id: {} by user: {}", id, userId);
+    
+    Material material = materialRepository.findById(id)
+        .orElseThrow(() -> {
+            log.error("Material not found with id: {}", id);
+            return new MaterialNotFoundException("Material not found with id: " + id);
+        });
+    
+    // Check if user owns the material
+    if (!material.getUser().getId().equals(userId)) {
+        log.error("User {} is not authorized to delete material {}", userId, id);
+        throw new UnauthorizedAccessException("You can only delete your own materials");
     }
-
-
-   /**
-     * Deletes a material from the system.
-     * 
-     * Security Rules:
-     * - Admins can delete any material
-     * - Regular users can only delete their own materials
-     * 
-     * @param id The ID of the material to delete
-     * @param userId The ID of the user attempting deletion
-     * @param isAdmin Whether the user has admin privileges
-     * @throws MaterialNotFoundException if material doesn't exist
-     * @throws UnauthorizedAccessException if user not authorized
-     */
-    @Transactional
-    public void deleteMaterial(Long id, Long userId, boolean isAdmin) {
-        Material material = getMaterialById(id);
+    
+    try {
+        // Delete the file first
+        log.info("Attempting to delete file: {}", material.getFileUrl());
+        fileStorageService.deleteFile(material.getFileUrl());
+        log.info("File deleted successfully");
         
-        // Admin can delete any material
-        if (!isAdmin && !material.getUser().getId().equals(userId)) {
-            throw new UnauthorizedAccessException("You can only delete your own materials");
-        }
+        // Delete from database using direct query
+        materialRepository.deleteMaterialById(id);
         
-        materialRepository.delete(material);
+        // Flush to ensure the delete is executed immediately
+        materialRepository.flush();
+        
+        log.info("Material {} deleted successfully from database", id);
+    } catch (IOException e) {
+        log.error("Error deleting material file: {}", e.getMessage(), e);
+        throw new FileStorageException("Could not delete material file", e);
+    } catch (Exception e) {
+        log.error("Error deleting material from database: {}", e.getMessage(), e);
+        throw new RuntimeException("Could not delete material from database", e);
     }
+}
 
     /**
-     * Validates material data before saving.
-     * 
-     * Checks:
-     * - File type is allowed
-     * - File size is within limits
-     * - Required fields are present
-     * - Course code format is valid
-     * 
-     * @param material The material to validate
-     * @throws InvalidInputException if validation fails
-     */
-    private void validateMaterial(Material material) {
-        if (material.getTitle() == null || material.getTitle().trim().isEmpty()) {
-            throw new InvalidInputException("Title is required");
+    * Loads a file as a Resource for downloading.
+    * 
+    * @param fileUrl The file URL/name to load
+    * @return Resource containing the file
+    * @throws MaterialNotFoundException if file doesn't exist
+    */
+    public Resource loadFileAsResource(String fileUrl) {
+        try {
+            Path filePath = fileStorageService.getFilePath(fileUrl);
+            Resource resource = new UrlResource(filePath.toUri());
+            
+        if (resource.exists()) {
+            return resource;
+        } else {
+            throw new MaterialNotFoundException("File not found: " + fileUrl);
+        }
+    } catch (MalformedURLException ex) {
+        throw new MaterialNotFoundException("File not found: " + fileUrl, ex);
+    }
+}
+
+    // Private helper methods...
+    private void validateFile(MultipartFile file) {
+        log.info("Validating file...");
+        
+        if (file == null) {
+            log.error("File is null");
+            throw new InvalidInputException("File is required");
         }
 
-        if (material.getFileSize() > MAX_FILE_SIZE) {
-            throw new InvalidInputException("File size exceeds maximum limit of 50MB");
+        if (file.isEmpty()) {
+            log.error("File is empty");
+            throw new InvalidInputException("File cannot be empty");
         }
 
-        String fileType = material.getFileType().toLowerCase();
-        if (!ALLOWED_FILE_TYPES.contains(fileType)) {
-            throw new InvalidInputException("File type not allowed. Allowed types: " + 
-                String.join(", ", ALLOWED_FILE_TYPES));
+        // Check file size
+        if (file.getSize() > maxFileSize) {
+            log.error("File size {} exceeds maximum limit of {}", 
+                file.getSize(), maxFileSize);
+            throw new InvalidInputException("File size exceeds maximum limit of 10MB");
         }
 
-        validateCourseCode(material.getCourseCode());
+        // Get original filename and extension
+        String originalFilename = file.getOriginalFilename();
+        if (originalFilename == null || originalFilename.isEmpty()) {
+            log.error("Invalid file name");
+            throw new InvalidInputException("Invalid file name");
+        }
+
+        // Validate file extension
+        String fileExtension = getFileExtension(originalFilename).toLowerCase();
+        log.info("File extension: {}", fileExtension);
+        if (!List.of(allowedTypes).contains(fileExtension)) {
+            log.error("Invalid file type: {}. Allowed types: {}", 
+                fileExtension, Arrays.toString(allowedTypes));
+            throw new InvalidInputException("File type not allowed. Allowed types: pdf, doc, docx");
+        }
+
+        // Validate content type
+        String contentType = file.getContentType();
+        log.info("Content type: {}", contentType);
+        if (contentType == null || !isValidContentType(contentType)) {
+            log.error("Invalid content type: {}", contentType);
+            throw new InvalidInputException("Invalid file type");
+        }
+
+        log.info("File validation successful");
+    }
+    
+    private boolean isValidContentType(String contentType) {
+        return contentType.equals("application/pdf") ||
+               contentType.equals("application/msword") ||
+               contentType.equals("application/vnd.openxmlformats-officedocument.wordprocessingml.document");
     }
 
-    /**
-     * Validates course code format.
-     * 
-     * Format rules:
-     * - Must be uppercase
-     * - Must be 6-8 characters
-     * - Must follow department code pattern
-     * 
-     * @param courseCode The course code to validate
-     * @throws InvalidInputException if course code is invalid
-     */
-    private void validateCourseCode(String courseCode) {
-        if (courseCode == null || !courseCode.matches("^[A-Z]{2,4}\\d{3,4}$")) {
-            throw new InvalidInputException("Invalid course code format. Example: MATH101");
-        }
+    private String getFileExtension(String filename) {
+        return Optional.ofNullable(filename)
+            .filter(f -> f.contains("."))
+            .map(f -> f.substring(filename.lastIndexOf(".") + 1))
+            .orElse("");
+    }
+
+    private MaterialDTO convertToDTO(Material material) {
+        return MaterialDTO.builder()
+            .id(material.getId())
+            .title(material.getTitle())
+            .description(material.getDescription())
+            .courseCode(material.getCourseCode())
+            .courseName(material.getCourseName())
+            .uploaderName(material.getUser().getName())
+            .downloads(material.getDownloads())
+            .uploadDate(material.getUploadDate())
+            .fileType(material.getFileType())
+            .fileSize(material.getFileSize())
+            .fileUrl(material.getFileUrl())
+            .build();
     }
 }

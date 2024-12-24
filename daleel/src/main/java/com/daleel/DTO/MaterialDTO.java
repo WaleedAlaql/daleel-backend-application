@@ -48,6 +48,10 @@ public class MaterialDTO {
     @Schema(description = "Course code", example = "MATH101")
     private String courseCode;
 
+    @NotBlank(message = "Course name is required")
+    @Schema(description = "Course name", example = "Calculus I")
+    private String courseName;
+
     @Schema(description = "Uploader's name", example = "Mohammed Ahmed")
     private String uploaderName;
 
@@ -62,4 +66,7 @@ public class MaterialDTO {
 
     @Schema(description = "File size in bytes", example = "1048576")
     private Long fileSize;
+
+    @Schema(description = "File URL for download")
+    private String fileUrl;
 }

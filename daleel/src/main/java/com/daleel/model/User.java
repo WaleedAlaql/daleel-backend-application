@@ -9,6 +9,7 @@ import lombok.Builder;
 import java.time.LocalDateTime;
 import java.util.List;
 import com.daleel.security.enums.Role;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 
 /**
  * User Entity - Represents a student in the system
@@ -88,6 +89,7 @@ public class User {
         mappedBy = "user",
         cascade = CascadeType.ALL
     )
+    @JsonIgnore
     private List<ProfessorReview> reviews;
 
     // Lifecycle callback - Automatically sets creation timestamp

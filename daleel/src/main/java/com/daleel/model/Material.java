@@ -1,67 +1,88 @@
 package com.daleel.model;
 
 import jakarta.persistence.*;
-import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.*;
 import lombok.Data;
+import lombok.NoArgsConstructor;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
 import java.time.LocalDateTime;
 
 /**
- * Material Entity - Represents educational materials uploaded by users
- * This entity stores information about uploaded files, including metadata
- * and download statistics
+ * Material Entity - Represents educational materials in the system.
+ * 
+ * This entity stores:
+ * - Material metadata (title, description, course info)
+ * - File information (URL, type, size)
+ * - Upload details (date, user)
+ * - Usage statistics (download count)
+ * 
+ * Relationships:
+ * - ManyToOne with User (uploader)
+ * 
+ * Business Rules:
+ * - Materials must be associated with a valid course code
+ * - Materials must have a title and description
+ * - File information is required
+ * - Download count starts at 0
  */
 @Data
 @Entity
+@Builder
+@NoArgsConstructor
+@AllArgsConstructor
 @Table(name = "materials")
 public class Material {
     
-    // Primary key configuration
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    // Course information
-    @NotBlank(message = "Course code is required")
+    @NotBlank(message = "Title is required")
+    @Size(min = 3, max = 100, message = "Title must be between 3 and 100 characters")
     @Column(nullable = false)
-    private String courseCode;  // e.g., "MATH101"
+    private String title;
+
+    @NotBlank(message = "Description is required")
+    @Size(max = 500, message = "Description cannot exceed 500 characters")
+    @Column(nullable = false)
+    private String description;
+
+    @NotBlank(message = "Course code is required")
+    @Pattern(regexp = "^[A-Z]{2,4}\\d{3}$", message = "Invalid course code format")
+    @Column(nullable = false)
+    private String courseCode;
 
     @NotBlank(message = "Course name is required")
     @Column(nullable = false)
-    private String courseName;  // e.g., "Calculus I"
+    private String courseName;
 
-    // Material details
-    @NotBlank(message = "Title is required")
-    @Column(nullable = false)
-    private String title;  // Title of the material
-
-    // File information
-    @Column(nullable = false)
-    private String fileUrl;  // URL/path to the stored file
-
-    @Column(nullable = false)
-    private LocalDateTime uploadDate;  // When the material was uploaded
-
-    @Column(nullable = false)
-    private Integer downloads = 0;  // Download counter
-
-    @Column(nullable = false)
-    private String fileType = "PDF";  // Type of file (defaulting to PDF)
-
-    @Column(nullable = false)
-    private Long fileSize;  // Size of file in bytes
-
-    // Relationship with User (Many materials belong to one user)
-    @ManyToOne(fetch = FetchType.LAZY)  // JPA: Lazy loading for better performance
-    @JoinColumn(
-        name = "user_id",  // Name of the foreign key column
-        nullable = false   // User is required
-    )
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "user_id", nullable = false)
     private User user;
 
-    // Lifecycle callback - Sets initial values
+    @NotBlank(message = "File URL is required")
+    @Column(nullable = false)
+    private String fileUrl;
+
+    @NotBlank(message = "File type is required")
+    @Column(nullable = false)
+    private String fileType;
+
+    @Positive(message = "File size must be positive")
+    @Column(nullable = false)
+    private Long fileSize;
+
+    @PositiveOrZero(message = "Downloads cannot be negative")
+    @Column(nullable = false)
+    @Builder.Default
+    private Integer downloads = 0;
+
+    @Column(nullable = false)
+    private LocalDateTime uploadDate;
+
     @PrePersist
     protected void onCreate() {
         uploadDate = LocalDateTime.now();
-        if (downloads == null) downloads = 0;
     }
 }

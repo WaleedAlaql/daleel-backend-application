@@ -1,122 +1,219 @@
 package com.daleel.controller;
 
-import com.daleel.model.Material;
+// Daleel imports
+import com.daleel.DTO.MaterialDTO;
+import com.daleel.model.User;
 import com.daleel.service.MaterialService;
+import com.daleel.service.UserService;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+
+import java.io.IOException;
+import java.net.URI;
+// Spring imports
+import org.springframework.core.io.Resource;
+import org.springframework.http.HttpHeaders;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.Authentication;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
+import java.util.List;
+
+// Swagger/OpenAPI imports
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
-import io.swagger.v3.oas.annotations.tags.Tag;
-import jakarta.validation.Valid;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
+import io.swagger.v3.oas.annotations.Parameter;
+
+// Validation
+
+// Lombok
 import lombok.RequiredArgsConstructor;
-import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
-import java.util.List;
+import lombok.extern.slf4j.Slf4j;
+
+// Jackson
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 
 /**
  * REST controller for managing educational materials.
  * 
- * This controller provides endpoints for:
- * - Material upload and download
- * - Material management
- * - Material search
+ * This controller handles:
+ * - Material uploads and downloads
+ * - Material metadata management
+ * - Course-specific material listings
+ * - Download tracking
+ * 
+ * Security:
+ * - Upload requires authentication
+ * - Delete requires ownership
+ * - Download and list are public
  */
 @RestController
-@RequestMapping("/api/materials")
+@RequestMapping("/materials")
 @RequiredArgsConstructor
-@Tag(name = "Material", description = "Educational material management APIs")
+@Slf4j
 public class MaterialController {
 
     private final MaterialService materialService;
+    private final UserService userService;
 
-    /**
-     * Creates a new material.
-     * 
-     * @param material The material data
-     * @param userId The ID of the user creating the material
-     * @return The created material
-     */
-    @PostMapping
-    @Operation(
-        summary = "Upload new material",
-        description = "Uploads a new educational material"
-    )
-    @ApiResponse(responseCode = "201", description = "Material created successfully")
-    public ResponseEntity<Material> createMaterial(
-            @Valid @RequestBody Material material,
-            @RequestParam Long userId  // Added userId parameter
-    ) {
-        Material createdMaterial = materialService.createMaterial(material, userId);
-        return ResponseEntity.ok(createdMaterial);
+    @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @PreAuthorize("isAuthenticated()")
+    public ResponseEntity<MaterialDTO> uploadMaterial(
+            @RequestPart(value = "metadata", required = true) String metadataJson,
+            @RequestPart(value = "file", required = true) MultipartFile file,
+            Authentication authentication) {
+        
+        log.info("=== Starting material upload process ===");
+        log.info("Received metadata: {}", metadataJson);
+        log.info("Received file: {}", file.getOriginalFilename());
+        
+        try {
+            // Parse metadata JSON
+            ObjectMapper mapper = new ObjectMapper();
+            MaterialDTO materialDTO = mapper.readValue(metadataJson, MaterialDTO.class);
+            
+            // Get user by email instead of casting
+            String userEmail = authentication.getName();
+            User user = userService.getUserByEmail(userEmail);
+            
+            log.info("Processing upload for user: {} (ID: {})", userEmail, user.getId());
+            
+            MaterialDTO created = materialService.createMaterial(materialDTO, file, user.getId());
+            log.info("Material created successfully with ID: {}", created.getId());
+            
+            return ResponseEntity
+                .created(URI.create("/materials/" + created.getId()))
+                .body(created);
+
+        } catch (JsonProcessingException e) {
+            log.error("Failed to parse metadata JSON", e);
+            throw new IllegalArgumentException("Invalid metadata format: " + e.getMessage());
+        } catch (Exception e) {
+            log.error("Unexpected error during upload", e);
+            throw new RuntimeException("Upload failed: " + e.getMessage(), e);
+        }
     }
 
     /**
-     * Retrieves a material by ID.
+     * Download a material.
      * 
-     * @param id The material ID
-     * @return The material information
+     * @param id Material ID
+     * @return Material file
      */
-    @GetMapping("/{id}")
-    @Operation(
-        summary = "Get material by ID",
-        description = "Retrieves material information based on the provided ID"
-    )
-    public ResponseEntity<Material> getMaterialById(@PathVariable Long id) {
-        Material material = materialService.getMaterialById(id);
-        return ResponseEntity.ok(material);
+    @GetMapping("/{id}/download")
+    @Operation(summary = "Download material", description = "Download material file by ID")
+    @ApiResponses(value = {
+        @ApiResponse(responseCode = "200", description = "File downloaded successfully"),
+        @ApiResponse(responseCode = "404", description = "Material not found")
+    })
+    public ResponseEntity<Resource> downloadMaterial(@PathVariable Long id) {
+        MaterialDTO materialDTO = materialService.getMaterialById(id);
+        Resource resource = materialService.loadFileAsResource(materialDTO.getFileUrl());
+        
+        materialService.incrementDownloads(id);
+        
+        return ResponseEntity.ok()
+            .contentType(MediaType.APPLICATION_OCTET_STREAM)
+            .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + resource.getFilename() + "\"")
+            .body(resource);
     }
 
     /**
-     * Retrieves materials by course code.
+     * Get materials by course code.
      * 
-     * @param courseCode The course code
+     * @param courseCode Course code to search for
      * @return List of materials
      */
     @GetMapping("/course/{courseCode}")
-    @Operation(
-        summary = "Get materials by course",
-        description = "Retrieves all materials for a specific course"
-    )
-    public ResponseEntity<List<Material>> getMaterialsByCourse(@PathVariable String courseCode) {
-        List<Material> materials = materialService.getMaterialsByCourse(courseCode);
+    @Operation(summary = "List course materials", description = "Get all materials for a specific course")
+    @ApiResponses(value = {
+        @ApiResponse(responseCode = "200", description = "Materials retrieved successfully"),
+        @ApiResponse(responseCode = "400", description = "Invalid course code")
+    })
+    public ResponseEntity<List<MaterialDTO>> getMaterialsByCourse(
+            @Parameter(description = "Course code (e.g., MATH101)")
+            @PathVariable String courseCode) {
+        
+        List<MaterialDTO> materials = materialService.getMaterialsByCourse(courseCode);
         return ResponseEntity.ok(materials);
     }
 
     /**
-     * Updates material information.
+     * Delete a material.
      * 
-     * @param id The material ID
-     * @param material The updated material data
-     * @return The updated material
+     * @param id Material ID
+     * @param authentication Authentication object
+     * @return No content
      */
-    @PutMapping("/{id}")
-    @Operation(
-        summary = "Update material",
-        description = "Updates material information"
-    )
-    public ResponseEntity<Material> updateMaterial(
+    @DeleteMapping("/{id}")
+    @PreAuthorize("isAuthenticated()")
+    @Operation(summary = "Delete material", description = "Delete a material (only by owner)")
+    @ApiResponses(value = {
+        @ApiResponse(responseCode = "204", description = "Material deleted successfully"),
+        @ApiResponse(responseCode = "401", description = "Unauthorized"),
+        @ApiResponse(responseCode = "403", description = "Forbidden - not owner"),
+        @ApiResponse(responseCode = "404", description = "Material not found"),
+        @ApiResponse(responseCode = "500", description = "Internal server error")
+    })
+    public ResponseEntity<Void> deleteMaterial(
             @PathVariable Long id,
-            @Valid @RequestBody Material material
-    ) {
-        Material updatedMaterial = materialService.updateMaterial(id, material);
-        return ResponseEntity.ok(updatedMaterial);
+            Authentication authentication) throws IOException {
+        log.info("Delete request received for material: {} by user: {}", id, authentication.getName());
+        User user = userService.getUserByEmail(authentication.getName());
+        materialService.deleteMaterial(id, user.getId());
+        return ResponseEntity.noContent().build();
     }
 
     /**
-     * Deletes a material.
-     * 
-     * @param id The material ID
-     * @return No content response
+     * Get all materials
      */
-    @DeleteMapping("/{id}")
-    @Operation(
-        summary = "Delete material",
-        description = "Deletes material based on the provided ID"
-    )
-    public ResponseEntity<Void> deleteMaterial(
+    @GetMapping
+    @Operation(summary = "Get all materials", description = "Retrieve all materials")
+    public ResponseEntity<List<MaterialDTO>> getAllMaterials() {
+        return ResponseEntity.ok(materialService.getAllMaterials());
+    }
+
+    /**
+     * Update material
+     */
+    @PutMapping("/{id}")
+    @PreAuthorize("isAuthenticated()")
+    @Operation(summary = "Update material", description = "Update an existing material's metadata")
+    public ResponseEntity<MaterialDTO> updateMaterial(
             @PathVariable Long id,
-            @RequestParam Long userId,
-            @RequestParam boolean isAdmin  
-    ) {
-        materialService.deleteMaterial(id, userId, isAdmin);
-        return ResponseEntity.noContent().build();
+            @RequestBody MaterialDTO materialDTO,
+            Authentication authentication) {
+        
+        User user = userService.getUserByEmail(authentication.getName());
+        MaterialDTO updated = materialService.updateMaterial(id, materialDTO, user.getId());
+        return ResponseEntity.ok(updated);
+    }
+
+    /**
+     * Get material by ID
+     */
+    @GetMapping("/{id}")
+    @Operation(summary = "Get material by ID", description = "Retrieve a material by its ID")
+    @ApiResponses(value = {
+        @ApiResponse(responseCode = "200", description = "Material found"),
+        @ApiResponse(responseCode = "404", description = "Material not found")
+    })
+    public ResponseEntity<MaterialDTO> getMaterialById(@PathVariable Long id) {
+        return ResponseEntity.ok(materialService.getMaterialById(id));
+    }
+
+    /**
+     * Get materials uploaded by the authenticated user
+     */
+    @GetMapping("/user")
+    @PreAuthorize("isAuthenticated()")
+    @Operation(summary = "Get user materials", description = "Get all materials uploaded by the authenticated user")
+    public ResponseEntity<List<MaterialDTO>> getUserMaterials(Authentication authentication) {
+        User user = userService.getUserByEmail(authentication.getName());
+        List<MaterialDTO> materials = materialService.getMaterialsByUserId(user.getId());
+        return ResponseEntity.ok(materials);
     }
 }

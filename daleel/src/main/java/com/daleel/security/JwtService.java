@@ -8,10 +8,19 @@ import io.jsonwebtoken.UnsupportedJwtException;
 import io.jsonwebtoken.io.Decoders;
 import io.jsonwebtoken.security.Keys;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.stereotype.Service;
 import com.daleel.exception.TokenException;
 import java.security.Key;
 import java.util.Date;
+import java.util.function.Function;
+
+import io.jsonwebtoken.Claims;
+import java.util.Base64;
+import jakarta.annotation.PostConstruct;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Service for handling JWT operations including generation, validation, and parsing.
@@ -23,7 +32,21 @@ public class JwtService {
     private String secretKey;
     
     @Value("${jwt.expiration}")
-    private Long jwtExpiration;
+    private long jwtExpiration;
+
+    private static final Logger log = LoggerFactory.getLogger(JwtService.class);
+
+    @PostConstruct
+    protected void init() {
+        // Encode secret key if not already in Base64
+        try {
+            Decoders.BASE64.decode(secretKey);
+        } catch (IllegalArgumentException e) {
+            // If not valid Base64, encode it
+            secretKey = Base64.getEncoder().encodeToString(secretKey.getBytes());
+            log.info("Secret key has been Base64 encoded");
+        }
+    }
 
     /**
      * Generates a JWT token for a given email
@@ -31,12 +54,17 @@ public class JwtService {
      * @return The generated JWT token
      */
     public String generateToken(String email) {
-        return Jwts.builder()
-                .setSubject(email)
-                .setIssuedAt(new Date())
-                .setExpiration(new Date(System.currentTimeMillis() + jwtExpiration))
-                .signWith(getSecretKey(), SignatureAlgorithm.HS256)
-                .compact();
+        try {
+            return Jwts.builder()
+                    .setSubject(email)
+                    .setIssuedAt(new Date())
+                    .setExpiration(new Date(System.currentTimeMillis() + jwtExpiration))
+                    .signWith(getSecretKey(), SignatureAlgorithm.HS256)
+                    .compact();
+        } catch (Exception e) {
+            log.error("Error generating token: {}", e.getMessage());
+            throw new RuntimeException("Could not generate token", e);
+        }
     }
 
     /**
@@ -98,7 +126,59 @@ public class JwtService {
      * @return The signing key used for JWT operations
      */
     private Key getSecretKey() {
-        byte[] keyBytes = Decoders.BASE64.decode(secretKey);
-        return Keys.hmacShaKeyFor(keyBytes);
+        try {
+            byte[] keyBytes = Decoders.BASE64.decode(secretKey);
+            return Keys.hmacShaKeyFor(keyBytes);
+        } catch (Exception e) {
+            log.error("Error creating signing key: {}", e.getMessage());
+            throw new IllegalStateException("Invalid secret key");
+        }
+    }
+
+    public String extractUsername(String token) {
+        try {
+            return extractClaim(token, Claims::getSubject);
+        } catch (Exception e) {
+            log.error("Error extracting username from token: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    public boolean isTokenValid(String token, UserDetails userDetails) {
+        try {
+            final String username = extractUsername(token);
+            return (username != null && 
+                   username.equals(userDetails.getUsername()) && 
+                   !isTokenExpired(token));
+        } catch (Exception e) {
+            log.error("Error validating token: {}", e.getMessage());
+            return false;
+        }
+    }
+
+    private boolean isTokenExpired(String token) {
+        return extractExpiration(token).before(new Date());
+    }
+
+    private Date extractExpiration(String token) {
+        return extractClaim(token, Claims::getExpiration);
+    }
+
+    private <T> T extractClaim(String token, Function<Claims, T> claimsResolver) {
+        final Claims claims = extractAllClaims(token);
+        return claimsResolver.apply(claims);
+    }
+
+    private Claims extractAllClaims(String token) {
+        try {
+            return Jwts.parserBuilder()
+                    .setSigningKey(getSecretKey())
+                    .build()
+                    .parseClaimsJws(token)
+                    .getBody();
+        } catch (Exception e) {
+            log.error("Error parsing JWT token: {}", e.getMessage());
+            throw e;
+        }
     }
 } 
