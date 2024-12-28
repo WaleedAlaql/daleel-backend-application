@@ -4,13 +4,13 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 /**
- * Main Application Class for Daleel
- * Daleel (دليل) - meaning "Guide" in Arabic
+ * Main Application Class for Marjaa
+ * Marjaa (مرجع) - meaning "Reference" in Arabic
  * An academic platform for University of Hail Students
  */
 @SpringBootApplication
-public class DaleelApplication {
+public class MarjaaApplication {
     public static void main(String[] args) {
-        SpringApplication.run(DaleelApplication.class, args);
+        SpringApplication.run(MarjaaApplication.class, args);
     }
 }
