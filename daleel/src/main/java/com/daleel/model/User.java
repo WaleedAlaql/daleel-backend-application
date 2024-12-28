@@ -7,6 +7,7 @@ import lombok.NoArgsConstructor;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import com.daleel.security.enums.Role;
 import com.fasterxml.jackson.annotation.JsonIgnore;
@@ -27,7 +28,13 @@ public class User {
     // Primary key configuration
     @Id// JPA: Marks this field as the primary key
     @GeneratedValue(strategy = GenerationType.IDENTITY) // JPA: Auto-increment
+    @Column(name = "id", nullable = false)
     private Long id;
+
+    // User's full name
+    @NotBlank(message = "Name is required")
+    @Column(name = "username", nullable = false)
+    private String name;
 
     // Email field with validation
     @NotBlank(message = "Email is required")  // Validation: Ensures email isn't blank
@@ -36,32 +43,27 @@ public class User {
         regexp = ".*@uoh\\.edu\\.sa$", 
         message = "Must be a UOH email address"
     ) // Validation: Ensures email is from UOH domain
-    @Column(unique = true, nullable = false) // JPA: Unique constraint and not null
+    @Column(name = "email", unique = true, nullable = false) // JPA: Unique constraint and not null
     private String email;
 
     // Password field
     @NotBlank(message = "Password is required")
-    @Column(nullable = false)
+    @Column(name = "password", nullable = false)
     private String password; // Note: This will store the hashed password, not plain text
-
-    // User's full name
-    @NotBlank(message = "Name is required")
-    @Column(nullable = false)
-    private String name;
 
     // User's student ID
     @NotBlank(message = "Student ID is required")
-    @Column(nullable = false)
+    @Column(name = "student_id", nullable = false)
     private String studentId;
 
     // User's department
     @NotBlank(message = "Department is required")
-    @Column(nullable = false)
+    @Column(name = "department", nullable = false)
     private String department;
 
     // User's role
     @Enumerated(EnumType.STRING)
-    @Column(nullable = false)
+    @Column(name = "role", nullable = false)
     private Role role;
 
 
@@ -95,6 +97,6 @@ public class User {
     // Lifecycle callback - Automatically sets creation timestamp
     @PrePersist
     protected void onCreate() {
-        createdAt = LocalDateTime.now();
+        createdAt = LocalDateTime.now().truncatedTo(ChronoUnit.SECONDS);
     }
 }

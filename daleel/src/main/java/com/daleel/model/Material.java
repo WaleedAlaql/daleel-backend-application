@@ -61,6 +61,10 @@ public class Material {
     @JoinColumn(name = "user_id", nullable = false)
     private User user;
 
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "course_id")
+    private Course course;
+
     @NotBlank(message = "File URL is required")
     @Column(nullable = false)
     private String fileUrl;
